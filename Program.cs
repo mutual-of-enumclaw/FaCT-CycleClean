@@ -6,6 +6,10 @@ using MoE.Commercial.Data;
 using MoE.Commercial.Data.Db2;
 using System.Data;
 using System.Xml.Linq;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+
 
 
 internal class Program
@@ -60,57 +64,7 @@ public class CycleClean : ICycleClean
             //Pull in records that are unprocessed renewals, over X amount of time old
             //We are assuming these are abandoned and we can set them to be excluded
             //from the cycle.
-            var cmd = $@"P.LOCATION,
-                       P.MASTER0CO,
-                       P.SYMBOL || P.POLICY0NUM || P.MODULE AS POL_ID,
-                       P.SYMBOL,
-                       P.POLICY0NUM,
-                       P.MODULE,
-                       P.SYMBOL || P.POLICY0NUM || RIGHT('00' || (CAST(P.MODULE AS NUM) - 1), 2) AS PRIOR_POLID,
-                       RIGHT('00' || (CAST(P.MODULE AS NUM) - 1), 2) AS PRIOR_MODULE,
-                       P.LINE0BUS,
-                       P.COMPANY0NO,
-                       P.RISK0STATE,
-                       (SELECT STATECDKEY
-                               FROM TBTS01
-                               WHERE STATEABBRV = RISK0STATE) AS STATECODE,
-                       P.TYPE0ACT,
-                       P.EFF0MO || '/' || P.EFF0DA || '/' || SUBSTR(P.EFF0YR, 2, 2) AS EFF_DATE1,
-                       P.EFF0YR || P.EFF0MO || P.EFF0DA AS EFF_DATE2,
-                       P.EXP0MO || '/' || P.EXP0DA || '/' || SUBSTR(P.EXP0YR, 2, 2) AS EXP_DATE1,
-                       P.EXP0YR || P.EXP0MO || P.EXP0DA AS EXP_DATE2,
-                       P.EXP0MO || (P.EXP0YR + 1900) AS EXP_DATE3,
-                       P.FILLR1 || P.RPT0AGT0NR || P.FILLR2 AS AGENT_CODE,
-                       (SELECT ACNM_NAME1
-                               FROM PMSPAG00
-                               WHERE AGNM_AGCY = FILLR1 || RPT0AGT0NR || FILLR2),
-                       ISSUE0CODE,
-                       A3.ADDRLN1,
-                       A3.CITY,
-                       A3.STATE,
-                       SUBSTR(A3.ZIPCODE, 1, 5) AS ZIPCODE
-                    FROM {0}.PMSP0200 P
-                         INNER JOIN {0}.BASCLT1400 A1
-                             ON A1.SYMBOL = P.SYMBOL
-                                 AND A1.POLICY0NUM = P.POLICY0NUM
-                                 AND A1.MODULE = P.MODULE
-                         INNER JOIN {0}.BASCLT0300 A3
-                             ON A3.CLTSEQNUM = A1.CLTSEQNUM
-                    WHERE ISSUE0CODE <> 'Q'
-                          AND TRANS0STAT = 'P'
-                          AND EFF0YR < (SELECT SUBSTR(CYCLE_DT, 1, 3) - 2 AS DATE_CHECK
-                                  FROM PMSPDATE
-                                  WHERE KEYFIELD = '')
-                          AND P.SYMBOL || P.POLICY0NUM || P.MODULE NOT IN (SELECT SYMBOL || POLICY0NUM || MODULE
-                                  FROM PMSP0200
-                                  WHERE ISSUE0CODE <> 'Q'
-                                        AND TRANS0STAT = 'V')
-                    ORDER BY P.LOCATION,
-                             P.MASTER0CO,
-                             P.SYMBOL,
-                             P.POLICY0NUM,
-                             P.MODULE,
-                             P.COMPANY0NO ";
+            string cmd = DoSelect();
 
             var results = await _dataProvider.ExecuteSql(cmd);
 
@@ -132,29 +86,110 @@ public class CycleClean : ICycleClean
                     // Build <DoDeleteSvcRq> element
                     XElement DoDeleteSvcRq = BuildDeleteRequest(resultRow);
 
-                    //await SendRequestToCommFramework(DoDeleteSvcRq);
+                    await SendRequestToCommFramework(DoDeleteSvcRq);
 
                     // Build <SetRNTReasonSvcRq> element
                     XElement SetRNTReasonSvcRq = SetRNTReason(resultRow);
 
-                    //await SendRequestToCommFramework(SetRNTReasonSvcRq);
+                    await SendRequestToCommFramework(SetRNTReasonSvcRq);
 
                     // Build <DoRNTActionSvcRq> element
                     XElement DoRNTActionSvcRq = CreateRNTActionRequest(resultRow);
 
-                    //await SendRequestToCommFramework(DoRNTActionSvcRq);
+                    await SendRequestToCommFramework(DoRNTActionSvcRq);
                 }
             }
 
             //_logger.LogDebug($"Executing inline DELETE statement {cmd}, deleting {deleteCount} rows");
 
-            await _dataProvider.ExecuteNonQuery(cmd, CommandType.Text, new GenericDbParameter[0]);
+            //await _dataProvider.ExecuteNonQuery(cmd, CommandType.Text, new GenericDbParameter[0]);
 
         }
         catch (Exception ex)
         {
             _logger.LogError(ex.ToString());
         }
+    }
+
+    private static readonly HttpClient _httpClient = new HttpClient();
+
+    private async Task SendRequestToCommFramework(XElement request)
+    {
+        var requestUri = "http://point-tst1.mutualofenumclaw.net/cfwpi/servlet/CommFwServlet"; 
+        var content = new StringContent(request.ToString(), Encoding.UTF8, "application/xml");
+
+        try
+        {
+            var response = await _httpClient.PostAsync(requestUri, content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException($"Request to {requestUri} failed with status code {response.StatusCode}");
+            }
+        }
+        catch (Exception ex)
+        {
+
+            _logger.LogError(ex.ToString());
+        }
+    }
+
+    private static string DoSelect()
+    {
+        var schema = "MOEDC0DAT";
+        return $@"SELECT DISTINCT 
+                    P.LOCATION,
+                    P.MASTER0CO,
+                    P.SYMBOL || P.POLICY0NUM || P.MODULE AS POL_ID,
+                    P.SYMBOL,
+                    P.POLICY0NUM,
+                    P.MODULE,
+                    P.SYMBOL || P.POLICY0NUM || RIGHT('00' || (CAST(P.MODULE AS NUM) - 1), 2) AS PRIOR_POLID,
+                    RIGHT('00' || (CAST(P.MODULE AS NUM) - 1), 2) AS PRIOR_MODULE,
+                    P.LINE0BUS,
+                    P.COMPANY0NO,
+                    P.RISK0STATE,
+                    (SELECT STATECDKEY
+                            FROM {schema}.TBTS01
+                            WHERE STATEABBRV = RISK0STATE) AS STATECODE,
+                    P.TYPE0ACT,
+                    P.EFF0MO || '/' || P.EFF0DA || '/' || SUBSTR(P.EFF0YR, 2, 2) AS EFF_DATE1,
+                    P.EFF0YR || P.EFF0MO || P.EFF0DA AS EFF_DATE2,
+                    P.EXP0MO || '/' || P.EXP0DA || '/' || SUBSTR(P.EXP0YR, 2, 2) AS EXP_DATE1,
+                    P.EXP0YR || P.EXP0MO || P.EXP0DA AS EXP_DATE2,
+                    P.EXP0MO || (P.EXP0YR + 1900) AS EXP_DATE3,
+                    P.FILLR1 || P.RPT0AGT0NR || P.FILLR2 AS AGENT_CODE,
+                    (SELECT ACNM_NAME1
+                            FROM {schema}.PMSPAG00
+                            WHERE AGNM_AGCY = FILLR1 || RPT0AGT0NR || FILLR2),
+                    ISSUE0CODE,
+                    A3.ADDRLN1,
+                    A3.CITY,
+                    A3.STATE,
+                    SUBSTR(A3.ZIPCODE, 1, 5) AS ZIPCODE
+                FROM {schema}.PMSP0200 P
+                        INNER JOIN {schema}.BASCLT1400 A1
+                            ON A1.SYMBOL = P.SYMBOL
+                                AND A1.POLICY0NUM = P.POLICY0NUM
+                                AND A1.MODULE = P.MODULE
+                        INNER JOIN {schema}.BASCLT0300 A3
+                            ON A3.CLTSEQNUM = A1.CLTSEQNUM
+                WHERE ISSUE0CODE <> 'Q'
+                        AND TRANS0STAT = 'P'
+                        AND EFF0YR < (SELECT SUBSTR(CYCLE_DT, 1, 3) - 2 AS DATE_CHECK
+                                FROM {schema}.PMSPDATE
+                                WHERE KEYFIELD = '')
+                        AND P.SYMBOL || P.POLICY0NUM || P.MODULE NOT IN (SELECT SYMBOL || POLICY0NUM || MODULE
+                                FROM {schema}.PMSP0200
+                                WHERE ISSUE0CODE <> 'Q'
+                                    AND TRANS0STAT = 'V')
+                        AND P.MODULE > '00' 
+                ORDER BY P.LOCATION,
+                            P.MASTER0CO,
+                            P.SYMBOL,
+                            P.POLICY0NUM,
+                            P.MODULE,
+                            P.COMPANY0NO ";
     }
 
     private static XElement BuildDeleteRequest(DataRow resultRow)
