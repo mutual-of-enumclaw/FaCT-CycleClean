@@ -18,6 +18,8 @@ namespace Fact.BatchCleaner
         private readonly IXmlMessageBuilder _xmlMessageBuilder;
         private readonly string _requestUri;
 
+        private readonly Func<DataRow, XElement>[] _requestBuilders;
+
         public CycleCleaner(
             IDataProvider dataProvider,
             ILogger<CycleCleaner> logger,
@@ -31,48 +33,27 @@ namespace Fact.BatchCleaner
             _xmlMessageBuilder = xmlMessageBuilder;
             _requestUri = db2Settings.Value.CommFramework?.RequestUri
                           ?? throw new ArgumentNullException("CommFramework.RequestUri");
+
+            _requestBuilders = new Func<DataRow, XElement>[]
+            {
+                row => _xmlMessageBuilder.BuildDeleteRequest(row),
+                row => _xmlMessageBuilder.SetRNTReason(row),
+                row => _xmlMessageBuilder.CreateRNTActionRequest(row)
+            };
         }
 
         public async Task Run()
         {
             try
             {
-                //Pull in records that are unprocessed renewals, over X amount of time old
-                //We are assuming these are abandoned and we can set them to be excluded
-                //from the cycle.
                 string cmd = DoSelect();
                 var results = await _dataProvider.ExecuteSql(cmd);
 
                 _logger.LogDebug($"Executing SQL: {cmd}");
 
-                //For each policy found in the above statement, we will build and insert three messages.
-                //These will:
-                //   1) Delete the RB encountered
-                //   2) Add a Renewal Not Taken comment to the policy
-                //   3) Set the underlying policy to RNT
-                //These changes will prevent the policy from trying to offer a new renewal term but
-                //leaves the policy in a state that can be used, if there is a need. 
-
-
                 if (results != null)
                 {
-                    foreach (DataRow row in results.Rows)
-                    {
-                        // Build XML requests from row data
-                        XElement signOnRequest = _xmlMessageBuilder.BuildSignOnRequest();
-                        XElement deleteRequest = _xmlMessageBuilder.BuildDeleteRequest(row);
-                        XElement setReasonRequest = _xmlMessageBuilder.SetRNTReason(row);
-                        XElement rntActionRequest = _xmlMessageBuilder.CreateRNTActionRequest(row);
-
-                        Console.WriteLine(deleteRequest);
-                        Console.WriteLine(setReasonRequest);
-                        Console.WriteLine(rntActionRequest);
-
-                        // Send each request separately
-                        await SendRequestToCommFramework(deleteRequest);
-                        await SendRequestToCommFramework(setReasonRequest);
-                        await SendRequestToCommFramework(rntActionRequest);
-                    }
+                    await ProcessRows(results);
                 }
             }
             catch (Exception ex)
@@ -81,9 +62,30 @@ namespace Fact.BatchCleaner
             }
         }
 
+        private async Task ProcessRows(DataTable results)
+        {
+            foreach (DataRow row in results.Rows)
+            {
+                foreach (var builder in _requestBuilders)
+                {
+                    await SendPointXmlRequest(builder(row), builder.Method.Name);
+                }
+            }
+        }
+
+        private async Task SendPointXmlRequest(XElement request, string requestType)
+        {
+            // Cast to concrete type to access BuildSignOnRequest()
+            XElement signOnRequest = ((XmlMessageBuilder)_xmlMessageBuilder).BuildSignOnRequest();
+            var pointXml = new XElement("POINTXML", signOnRequest, request);
+
+            _logger.LogDebug($"{requestType} XML: {pointXml.ToString(SaveOptions.None)}");
+            await SendRequestToCommFramework(pointXml);
+        }
+
         private string DoSelect()
         {
-            var schema = "MOEDC0DAT";
+            var schema = _dataProvider.Schema ?? "SND1C0DAT";
             return $@"SELECT DISTINCT 
                     P.LOCATION,
                     P.MASTER0CO,
@@ -111,6 +113,8 @@ namespace Fact.BatchCleaner
                             WHERE AGNM_AGCY = FILLR1 || RPT0AGT0NR || FILLR2),
                     ISSUE0CODE,
                     A3.ADDRLN1,
+                    A3.ADDRLN2,
+                    A3.ADDRLN3,
                     A3.CITY,
                     A3.STATE,
                     SUBSTR(A3.ZIPCODE, 1, 5) AS ZIPCODE
