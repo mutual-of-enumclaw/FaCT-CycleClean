@@ -1,4 +1,5 @@
 ﻿using Dapper;
+using Microsoft.Extensions.Options;
 using MoE.Commercial.Data.Extensions;
 using System.Data;
 using System.Data.Odbc;
@@ -7,14 +8,14 @@ namespace MoE.Commercial.Data.Db2
 {
     public class Db2OdbcDataProvider : IDataProvider
     {
-        public Db2OdbcDataProvider(Db2Settings config)
-        {
-            Config = config ?? throw new ArgumentNullException(nameof(config));
-        }
+            public Db2OdbcDataProvider(IOptions<Db2Settings> options)
+            {
+                Config = options?.Value ?? throw new ArgumentNullException(nameof(options));
+            }
 
-        public Db2Settings Config { get; }
+            public Db2Settings Config { get; }
 
-        public string Schema => Config.Schema;
+            public string Schema => Config.Schema;
 
         public Task<IEnumerable<T>> Query<T>(string query, GenericDbParameter[]? parameters = null)
         {

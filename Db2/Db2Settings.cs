@@ -1,14 +1,15 @@
-﻿namespace MoE.Commercial.Data.Db2
+﻿namespace MoE.Commercial.Data
 {
-	/// <summary>
-	/// Used to configure Db2DataProvider
-	/// </summary>
-	public class Db2Settings
-	{
-		public string Name { get; set; }
+    public class Db2Settings
+    {
+        public string Name { get; set; }
+        public string ConnectionString { get; set; }
+        public string Schema { get; set; }
+        public CommFrameworkSettings CommFramework { get; set; }
+    }
 
-		public string ConnectionString { get; set; }
-
-		public string Schema { get; set; }
-	}
+    public class CommFrameworkSettings
+    {
+        public string RequestUri { get; set; }
+    }
 }
