@@ -16,7 +16,7 @@ public class CycleCleanerTests
         var xmlMessageBuilderMock = new Mock<IXmlMessageBuilder>();
         var httpClient = new HttpClient();
 
-        var settings = Options.Create(new Db2Settings
+        var db2Settings = Options.Create(new Db2Settings
         {
             CommFramework = new CommFrameworkSettings
             {
@@ -24,12 +24,19 @@ public class CycleCleanerTests
             }
         });
 
+        var loggingSettings = Options.Create(new LoggingSettings
+        {
+            LogDirectory = "C:\\temp\\logs",
+            LogFileName = "test_{Date}.log"
+        });
+
         // Act & Assert
         var cleaner = new CycleCleaner(
             dataProviderMock.Object,
             NullLogger<CycleCleaner>.Instance,
             xmlMessageBuilderMock.Object,
-            settings,
+            db2Settings,
+            loggingSettings,
             httpClient
         );
     }
